@@ -196,11 +196,7 @@ class TrtLlmFp8ExpertsModular(TrtLlmFp8ExpertsBase, mk.FusedMoEExpertsModular):
             weight_layout = WeightLayout.BlockMajorK
             hidden_states_scale = a1q_scale.t().contiguous()
 
-        # `trtllm_fp8_block_scale_routed_moe` has a bug and does not write to the
-        # output tensor in-place so we need to manually copy the result to the
-        # output tensor
-        # https://github.com/flashinfer-ai/flashinfer/issues/2703
-        result = flashinfer.fused_moe.trtllm_fp8_block_scale_routed_moe(
+        flashinfer.fused_moe.trtllm_fp8_block_scale_routed_moe(
             topk_ids=packed_topk_ids,
             routing_bias=None,
             hidden_states=hidden_states,
@@ -221,9 +217,8 @@ class TrtLlmFp8ExpertsModular(TrtLlmFp8ExpertsBase, mk.FusedMoEExpertsModular):
             use_shuffled_weight=use_shuffled_weight,
             weight_layout=weight_layout,
             fp8_quantization_type=fp8_quant_type,
-            # output=output,
+            output=output,
         )
-        output.copy_(result)
 
 
 class TrtLlmFp8ExpertsMonolithic(TrtLlmFp8ExpertsBase, mk.FusedMoEExpertsMonolithic):
