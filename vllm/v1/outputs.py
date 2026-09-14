@@ -369,6 +369,12 @@ class ModelRunnerOutput:
     # ``None`` when ``return_sampling_mask`` is off.
     sampling_masks: SamplingMaskLists | None = None
 
+    # req_id -> number of this step's sampled tokens to keep before the
+    # thinking budget was exhausted. Only set when
+    # ``reasoning_config.thinking_budget_action == "truncate"``; the
+    # scheduler drops the remaining tokens and finishes the request.
+    thinking_budget_exhausted: dict[str, int] | None = None
+
     @staticmethod
     def with_kv_conn_output_only(
         kv_connector_output: KVConnectorOutput | None,

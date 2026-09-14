@@ -134,3 +134,25 @@ def check_stop(request: Request, max_model_len: int) -> bool:
         return True
 
     return False
+
+
+def reasoning_ends_at(
+    all_token_ids: Sequence[int],
+    new_token_ids: list[int],
+    pos: int,
+    end_token_ids: list[int],
+) -> bool:
+    """Whether the natural reasoning end marker starts at ``new_token_ids[pos]``.
+
+    The marker may have started in ``all_token_ids`` (already committed) or
+    may still be incomplete at the end of ``new_token_ids``; both count, so a
+    request that closes its reasoning exactly at the budget is not truncated.
+    """
+    n = len(end_token_ids)
+    tail = list(all_token_ids[-(n - 1) :]) if n > 1 else []
+    window = tail + new_token_ids[pos:]
+    for start in range(max(0, len(tail) - n + 1), len(tail) + 1):
+        candidate = window[start : start + n]
+        if candidate and end_token_ids[: len(candidate)] == candidate:
+            return True
+    return False

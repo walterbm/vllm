@@ -108,6 +108,7 @@ class MockReasoningConfig:
 
     reasoning_start_token_ids = [THINK_START_TOKEN_ID]
     reasoning_end_token_ids = [THINK_END_TOKEN_ID]
+    thinking_budget_action = "force_end"
     enabled = True
 
 
@@ -980,6 +981,7 @@ class MockReasoningNoEndTokens:
 
     reasoning_start_token_ids = [THINK_START_TOKEN_ID]
     reasoning_end_token_ids: list[int] = []
+    thinking_budget_action = "force_end"
 
 
 def test_maybe_create_thinking_budget_holder_without_reasoning():
@@ -1398,6 +1400,7 @@ class TestThinkingBudgetReentry:
         class FakeReasoningConfig:
             reasoning_start_token_ids = [TestThinkingBudgetReentry.THINK_START]
             reasoning_end_token_ids: list[int] = []
+            thinking_budget_action = "force_end"
             enabled = True
 
         cfg = FakeReasoningConfig()
@@ -1535,6 +1538,7 @@ class TestThinkingBudgetNaturalEndReentry:
         class FakeReasoningConfig:
             reasoning_start_token_ids: list[int]
             reasoning_end_token_ids: list[int]
+            thinking_budget_action = "force_end"
             enabled: bool = True
 
         cfg = FakeReasoningConfig(
@@ -1838,6 +1842,7 @@ class TestThinkingBudgetNaturalEndReentry:
         class FakeReasoningConfig:
             reasoning_start_token_ids: list[int]
             reasoning_end_token_ids: list[int]
+            thinking_budget_action = "force_end"
             enabled: bool = True
 
         cfg = FakeReasoningConfig(

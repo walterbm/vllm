@@ -317,6 +317,18 @@ for output in outputs:
     print("text:", output.outputs[0].text)
 ```
 
+### Truncating Instead of Forcing the End Marker
+
+By default, exhausting the budget injects `reasoning_end_str` and generation continues with the answer. For workflows that want an over-budget sample to simply stop (for example RL rollouts, where injected tokens are off-policy), set `thinking_budget_action` to `truncate` in `--reasoning-config`:
+
+```bash
+vllm serve Qwen/Qwen3-0.6B \
+    --reasoning-parser qwen3 \
+    --reasoning-config '{"thinking_budget_action": "truncate"}'
+```
+
+Requests keep using `thinking_token_budget`. Once the reasoning block reaches the budget the request finishes with `finish_reason="length"` and `stop_reason="thinking_token_budget"`; no end marker or other token is injected, and the response contains exactly `thinking_token_budget` reasoning tokens. The setting is engine-wide, so every budgeted request on the server truncates.
+
 ## Automatic `enable_thinking` Activation
 
 Some models (such as Gemma 4, DeepSeek-V4-Pro and IBM Granite 3.2) require `enable_thinking: true` in their chat template kwargs to activate thinking mode — without it, reasoning tokens are never generated regardless of other settings.

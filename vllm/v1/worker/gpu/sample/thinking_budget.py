@@ -46,8 +46,20 @@ class ThinkingBudgetState:
             else reasoning_config.natural_reasoning_end_token_ids or []
         )
         self.enabled = bool(start_ids and end_ids and natural_end_ids)
+        # In truncate mode the kernel records where the budget ran out instead
+        # of forcing end tokens; see ``take_exhausted``.
+        self.truncate = False
         if not self.enabled:
             return
+        self.truncate = (
+            reasoning_config is not None
+            and reasoning_config.thinking_budget_action == "truncate"
+        )
+        self.exhausted_pos: torch.Tensor | None = None
+        if self.truncate:
+            self.exhausted_pos = torch.full(
+                (self.max_num_reqs,), _INT32_MAX, dtype=torch.int32, device=self.device
+            )
 
         self.thinking_token_budget = UvaBackedTensor(
             self.max_num_reqs, dtype=torch.int32
@@ -134,7 +146,25 @@ class ThinkingBudgetState:
             self.reasoning_start_token_ids,
             self.natural_reasoning_end_token_ids,
             self.reasoning_end_token_ids,
+            self.exhausted_pos,
+            self.truncate,
         )
+
+    def take_exhausted(
+        self, idx_mapping: torch.Tensor, idx_mapping_np: np.ndarray
+    ) -> torch.Tensor | None:
+        """Per-request position at which the budget ran out this step.
+
+        Returns ``None`` unless in truncate mode; entries equal to int32 max
+        mean the budget was not exhausted.
+        """
+        if self.exhausted_pos is None or not np.any(
+            self.use_thinking_budget[idx_mapping_np]
+        ):
+            return None
+        exhausted = self.exhausted_pos[idx_mapping]
+        self.exhausted_pos[idx_mapping] = _INT32_MAX
+        return exhausted
 
 
 @triton.jit
@@ -270,9 +300,11 @@ def _thinking_budget_kernel(
     reasoning_start_token_ids_ptr,
     natural_reasoning_end_token_ids_ptr,
     reasoning_end_token_ids_ptr,
+    exhausted_pos_ptr,
     START_LEN: tl.constexpr,
     NATURAL_END_LEN: tl.constexpr,
     END_LEN: tl.constexpr,
+    TRUNCATE: tl.constexpr,
 ):
     token_idx = tl.program_id(0).to(tl.int64)
     req_state_idx = tl.load(expanded_idx_mapping_ptr + token_idx)
@@ -338,6 +370,12 @@ def _thinking_budget_kernel(
     if num_reasoning_tokens < budget:
         return
 
+    if TRUNCATE:
+        # Report the first over-budget position; the scheduler drops this
+        # token and finishes the request.
+        tl.atomic_min(exhausted_pos_ptr + req_state_idx, local_pos)
+        return
+
     # If the tail already ends with a prefix of the forced end sequence
     # (even from a resumed prompt), continue from the next marker token.
     end_prefix_len = 0
@@ -384,6 +422,8 @@ def apply_thinking_budget(
     reasoning_start_token_ids: torch.Tensor,
     natural_reasoning_end_token_ids: torch.Tensor,
     reasoning_end_token_ids: torch.Tensor,
+    exhausted_pos: torch.Tensor,
+    truncate: bool,
 ) -> None:
     num_tokens = logits.shape[0]
     start_len = reasoning_start_token_ids.shape[0]
@@ -422,7 +462,9 @@ def apply_thinking_budget(
         reasoning_start_token_ids,
         natural_reasoning_end_token_ids,
         reasoning_end_token_ids,
+        exhausted_pos,
         START_LEN=start_len,
         NATURAL_END_LEN=natural_end_len,
         END_LEN=end_len,
+        TRUNCATE=truncate,
     )

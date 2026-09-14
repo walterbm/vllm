@@ -203,6 +203,9 @@ class Sampler:
             num_sampled=num_sampled,
             num_rejected=num_rejected,
             sampling_mask_tensors=sampling_mask_tensors,
+            thinking_budget_exhausted=self.thinking_budget_state.take_exhausted(
+                idx_mapping, idx_mapping_np
+            ),
         )
         return sampler_output
 

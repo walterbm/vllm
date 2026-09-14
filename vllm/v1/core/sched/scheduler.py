@@ -52,7 +52,7 @@ from vllm.v1.core.sched.request_queue import (
     SchedulingPolicy,
     create_request_queue,
 )
-from vllm.v1.core.sched.utils import check_stop, remove_all
+from vllm.v1.core.sched.utils import check_stop, reasoning_ends_at, remove_all
 from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
 from vllm.v1.kv_cache_interface import (
     KVCacheConfig,
@@ -192,6 +192,12 @@ class Scheduler(SchedulerInterface):
 
         # req_id -> Request
         self.requests: dict[str, Request] = {}
+        reasoning_config = vllm_config.reasoning_config
+        self.reasoning_end_token_ids: list[int] | None = (
+            reasoning_config.natural_reasoning_end_token_ids
+            if reasoning_config is not None
+            else None
+        )
         # Scheduling policy
         try:
             self.policy = SchedulingPolicy(self.scheduler_config.policy)
@@ -1873,6 +1879,7 @@ class Scheduler(SchedulerInterface):
         model_runner_output: ModelRunnerOutput,
     ) -> dict[int, EngineCoreOutputs]:
         sampled_token_ids = model_runner_output.sampled_token_ids
+        thinking_budget_exhausted = model_runner_output.thinking_budget_exhausted
         logprobs = model_runner_output.logprobs
         prompt_logprobs_dict = model_runner_output.prompt_logprobs_dict
         num_scheduled_tokens = scheduler_output.num_scheduled_tokens
@@ -1963,12 +1970,37 @@ class Scheduler(SchedulerInterface):
             generated_token_ids = (
                 sampled_token_ids[req_index] if sampled_token_ids else []
             )
+            # Truncate mode: the worker reports how many of this step's tokens
+            # fit in the thinking budget. The budget is only reached if a token
+            # was actually produced past that point (draft tokens before it may
+            # have been rejected) and that token does not end the reasoning
+            # naturally; the surplus then counts as rejected.
+            thinking_budget_reached = False
+            if thinking_budget_exhausted:
+                num_keep = thinking_budget_exhausted.get(req_id)
+                if (
+                    num_keep is not None
+                    and len(generated_token_ids) > num_keep
+                    and not (
+                        self.reasoning_end_token_ids
+                        and reasoning_ends_at(
+                            request.all_token_ids,
+                            generated_token_ids,
+                            num_keep,
+                            self.reasoning_end_token_ids,
+                        )
+                    )
+                ):
+                    del generated_token_ids[num_keep:]
+                    thinking_budget_reached = True
 
             scheduled_spec_token_ids = (
                 scheduler_output.scheduled_spec_decode_tokens.get(req_id)
             )
             if scheduled_spec_token_ids and (
-                generated_token_ids or self.num_sampled_tokens_per_step == 0
+                generated_token_ids
+                or thinking_budget_reached
+                or self.num_sampled_tokens_per_step == 0
             ):
                 num_draft_tokens = len(scheduled_spec_token_ids)
                 num_sampled = self.num_sampled_tokens_per_step
@@ -2021,7 +2053,7 @@ class Scheduler(SchedulerInterface):
             num_output_tokens_before = len(request._output_token_ids)
 
             # Check for stop and update request status.
-            if new_token_ids:
+            if new_token_ids or thinking_budget_reached:
                 new_token_ids, stopped = self._update_request_with_output(
                     request, new_token_ids, is_stale=output_is_stale
                 )
@@ -2039,6 +2071,11 @@ class Scheduler(SchedulerInterface):
                 # past a multi-modal item the encoder cache could not admit, so
                 # a consumed prompt also means every item in it was encoded.
                 request.status = RequestStatus.FINISHED_STOPPED
+                stopped = True
+
+            if thinking_budget_reached and not stopped and not output_is_stale:
+                request.status = RequestStatus.FINISHED_LENGTH_CAPPED
+                request.stop_reason = "thinking_token_budget"
                 stopped = True
 
             if new_token_ids and self.structured_output_manager.should_advance(

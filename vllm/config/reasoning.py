@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 from dataclasses import field
+from typing import Literal
 
 from vllm.config.model import ModelConfig
 from vllm.config.utils import config
@@ -25,6 +26,11 @@ class ReasoningConfig:
     """String that indicates the start of reasoning."""
     reasoning_end_str: str = ""
     """String forced when the thinking budget is exhausted."""
+    thinking_budget_action: Literal["force_end", "truncate"] = "force_end"
+    """What happens when a request's `thinking_token_budget` is exhausted.
+    `force_end` injects `reasoning_end_str` and keeps generating; `truncate`
+    finishes the request with `finish_reason="length"` and
+    `stop_reason="thinking_token_budget"` without emitting any extra token."""
 
     _reasoning_start_token_ids: list[int] | None = field(
         default=None, init=False, repr=False

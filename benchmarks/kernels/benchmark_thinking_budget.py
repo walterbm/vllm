@@ -24,6 +24,7 @@ QUANTILES = [0.5, 0.2, 0.8]
 class ReasoningConfig:
     reasoning_start_token_ids = [START_TOKEN_ID]
     reasoning_end_token_ids = [END_TOKEN_ID]
+    thinking_budget_action = "force_end"
     natural_reasoning_end_token_ids = [END_TOKEN_ID]
 
 

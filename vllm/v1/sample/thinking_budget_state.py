@@ -52,6 +52,15 @@ class ThinkingBudgetStateHolder:
 
         # No separate enable flag: a non-``None`` ``reasoning_config`` is the switch.
         self.is_enabled = reasoning_config is not None
+        # In truncate mode, record where the budget ran out instead of forcing
+        # end tokens; the model runner reports it and the scheduler finishes
+        # the request (see ``take_exhausted``).
+        self.truncate = (
+            reasoning_config is not None
+            and reasoning_config.thinking_budget_action == "truncate"
+        )
+        # Batch slot -> number of this step's tokens to keep.
+        self.exhausted: dict[int, int] = {}
 
         if reasoning_config is None:
             self.think_start_token_ids = []
@@ -110,6 +119,8 @@ class ThinkingBudgetStateHolder:
                 state = self._state.pop(i1, None)
                 if state is not None:
                     self._state[i2] = state
+                else:
+                    self._state.pop(i2, None)
 
     def update_state(
         self,
@@ -121,6 +132,7 @@ class ThinkingBudgetStateHolder:
         if not self.is_enabled or not self._state:
             return
 
+        self.exhausted.clear()
         spec_lists = spec_token_ids or []
         last_row_for_req: dict[int, int] | None = None
         if repeat_indices is not None:
@@ -146,6 +158,14 @@ class ThinkingBudgetStateHolder:
             state["in_spec_mode"] = self.in_spec_mode
             state["force_index"] = []
             self._update_think_state(state)
+            if self.truncate and state["in_end"] and state["force_index"]:
+                self.exhausted[seq_idx] = state["force_index"][0]
+
+    def take_exhausted(self) -> dict[int, int]:
+        """Return and clear the slots whose budget ran out this step."""
+        exhausted = self.exhausted
+        self.exhausted = {}
+        return exhausted
 
     def apply_to_logits(
         self,
@@ -154,7 +174,7 @@ class ThinkingBudgetStateHolder:
         spec_token_ids: list[list[int]] | None,
     ) -> torch.Tensor:
         """Mask and bump logits for forced end-of-thinking tokens."""
-        if not self.is_enabled or not self._state:
+        if not self.is_enabled or not self._state or self.truncate:
             return logits
         spec_lists = spec_token_ids or []
         return self._apply_forcing_to_logits(logits, predict_bonus_token, spec_lists)

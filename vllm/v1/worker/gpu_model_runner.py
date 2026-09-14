@@ -3634,6 +3634,19 @@ class GPUModelRunner(
             ec_connector_output,
         )
 
+    def _take_thinking_budget_exhausted(
+        self, req_ids: list[str]
+    ) -> dict[str, int] | None:
+        """req_id -> tokens to keep for requests whose thinking budget ran out
+        this step (``thinking_budget_action="truncate"`` only)."""
+        holder = self.input_batch.thinking_budget_state_holder
+        if holder is None or not holder.truncate:
+            return None
+        return {
+            req_ids[slot]: num_keep
+            for slot, num_keep in holder.take_exhausted().items()
+        } or None
+
     def _sample(
         self,
         logits: torch.Tensor | None,
@@ -4770,6 +4783,9 @@ class GPUModelRunner(
                 num_nans_in_logits=num_nans_in_logits,
                 cudagraph_stats=cudagraph_stats,
                 routed_experts=None,
+                thinking_budget_exhausted=self._take_thinking_budget_exhausted(
+                    req_ids_output_copy
+                ),
             )
 
         if not self.use_async_scheduling:

@@ -1823,6 +1823,14 @@ class VllmConfig:
             self.instance_id = random_uuid()[:5]
 
         if self.reasoning_config is not None and self.model_config is not None:
+            if (
+                self.reasoning_config.thinking_budget_action == "truncate"
+                and self.parallel_config.enable_batch_sharded_sampling
+            ):
+                raise ValueError(
+                    "thinking_budget_action='truncate' is not supported with "
+                    "batch-sharded sampling."
+                )
             self.reasoning_config.initialize_token_ids(self.model_config)
             if not self.reasoning_config.enabled:
                 logger.warning_once(

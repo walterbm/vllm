@@ -20,6 +20,7 @@ VOCAB_SIZE = 128
 class MockReasoningConfig:
     reasoning_start_token_ids = [90]
     reasoning_end_token_ids = [91]
+    thinking_budget_action = "force_end"
     natural_reasoning_end_token_ids = [91]
 
 

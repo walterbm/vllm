@@ -93,6 +93,23 @@ def server_with_auto_reasoning_config():
 
 
 @pytest.fixture(scope="module")
+def server_truncate():
+    args = [
+        "--reasoning-parser",
+        "qwen3",
+        "--reasoning-config",
+        '{"thinking_budget_action": "truncate"}',
+        "--max-model-len",
+        "2048",
+        "--enforce-eager",
+        "--gpu-memory-utilization",
+        "0.4",
+    ]
+    with RemoteOpenAIServer(MODEL_NAME, args) as remote_server:
+        yield remote_server
+
+
+@pytest.fixture(scope="module")
 def server_qwen35_fp8_mtp_tp2():
     """Qwen3.5-35B FP8 with MTP speculative decoding and tensor parallel size 2."""
     if current_platform.device_count() < 2:
@@ -343,3 +360,34 @@ async def test_streaming_with_thinking_disabled_stays_in_content(
 
     assert "".join(content_chunks).strip() != ""
     assert reasoning_chunks == []
+
+
+@pytest.mark.asyncio
+async def test_thinking_token_budget_truncate_finishes_with_length(server_truncate):
+    """With thinking_budget_action=truncate the request ends at the budget with
+    finish_reason="length" and no injected end marker."""
+    tokenizer = get_tokenizer(tokenizer_name=MODEL_NAME)
+    start_ids = list(tokenizer.encode(REASONING_START_STR, add_special_tokens=False))
+    end_ids = list(tokenizer.encode(REASONING_END_STR, add_special_tokens=False))
+
+    async with server_truncate.get_async_client() as client:
+        response = await client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=MESSAGES,
+            max_tokens=100,
+            extra_body={
+                "thinking_token_budget": THINK_BUDGET,
+                "return_token_ids": True,
+            },
+        )
+
+    choice = response.choices[0]
+    assert choice.finish_reason == "length"
+    assert choice.stop_reason == "thinking_token_budget"
+    assert choice.message.content in (None, "")
+    output_ids = list(choice.token_ids)
+    assert end_ids[0] not in output_ids
+    n_reason = _count_reasoning_decode_token_ids_between_markers(
+        list(response.prompt_token_ids) + output_ids, start_ids, end_ids
+    )
+    assert n_reason == THINK_BUDGET

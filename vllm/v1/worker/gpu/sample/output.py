@@ -20,6 +20,9 @@ class SamplerOutput:
     num_sampled: torch.Tensor | None
     num_rejected: torch.Tensor | None = None
     sampling_mask_tensors: SamplingMaskTensors | None = None
+    # [num_reqs] position at which the thinking budget ran out (int32 max
+    # if not), or None. See ThinkingBudgetState.take_exhausted.
+    thinking_budget_exhausted: torch.Tensor | None = None
 
 
 @triton.jit

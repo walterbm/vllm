@@ -27,18 +27,21 @@ VOCAB_SIZE = 128
 class MockReasoningConfig:
     reasoning_start_token_ids = [START]
     reasoning_end_token_ids = [END]
+    thinking_budget_action = "force_end"
     natural_reasoning_end_token_ids = [END]
 
 
 class MockMultiTokenEndReasoningConfig:
     reasoning_start_token_ids = [START]
     reasoning_end_token_ids = [END_A, END_B]
+    thinking_budget_action = "force_end"
     natural_reasoning_end_token_ids = [END_A, END_B]
 
 
 class MockDistinctEndReasoningConfig:
     reasoning_start_token_ids = [START]
     reasoning_end_token_ids = [END_A, END_B]
+    thinking_budget_action = "force_end"
     natural_reasoning_end_token_ids = [END]
 
 
@@ -299,3 +302,40 @@ def test_v2_thinking_budget_continues_end_prefix_from_prompt():
 
     assert out[0, END_B] == pytest.approx(1.0e9)
     assert out[0, END_A] == 0
+
+
+class MockTruncateReasoningConfig(MockReasoningConfig):
+    thinking_budget_action = "truncate"
+
+
+def _take_exhausted(state: ThinkingBudgetState) -> list[int] | None:
+    idx_mapping = torch.tensor([3], dtype=torch.int32, device=DEVICE)
+    out = state.take_exhausted(idx_mapping, idx_mapping.cpu().numpy())
+    return None if out is None else out.cpu().tolist()
+
+
+def test_v2_truncate_reports_position_without_forcing():
+    req_states = _make_req_states([1, START, 10, 11, 12], prompt_len=1)
+    state = ThinkingBudgetState(req_states, MockTruncateReasoningConfig())
+    state.add_request(3, SamplingParams(thinking_token_budget=3))
+    state.apply_staged_writes()
+
+    logits = torch.zeros((1, VOCAB_SIZE), device=DEVICE)
+    out = _apply(state, logits, input_ids=[12], local_pos=[0])
+
+    assert torch.all(out == 0)
+    assert _take_exhausted(state) == [0]
+    assert _take_exhausted(state) == [2**31 - 1]
+
+
+def test_v2_truncate_reports_first_over_budget_draft_position():
+    req_states = _make_req_states([1, START, 10, 11], prompt_len=1)
+    state = ThinkingBudgetState(req_states, MockTruncateReasoningConfig())
+    state.add_request(3, SamplingParams(thinking_token_budget=3))
+    state.apply_staged_writes()
+
+    logits = torch.zeros((3, VOCAB_SIZE), device=DEVICE)
+    out = _apply(state, logits, input_ids=[11, 20, 21], local_pos=[0, 1, 2])
+
+    assert torch.all(out == 0)
+    assert _take_exhausted(state) == [1]

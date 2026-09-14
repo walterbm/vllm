@@ -32,6 +32,7 @@ from vllm.v1.core.kv_cache_coordinator import HybridKVCacheCoordinator
 from vllm.v1.core.kv_cache_utils import get_request_block_hasher, init_none_hash
 from vllm.v1.core.sched.output import CachedRequestData, SchedulerOutput
 from vllm.v1.core.sched.scheduler import Scheduler
+from vllm.v1.core.sched.utils import reasoning_ends_at
 from vllm.v1.core.single_type_kv_cache_manager import register_all_kvcache_specs
 from vllm.v1.engine import FinishReason
 from vllm.v1.kv_cache_interface import (
@@ -6515,3 +6516,90 @@ def test_update_draft_token_ids_in_output_strips_padding(monkeypatch):
         -1,
     ]
     assert scheduler_output.num_invalid_spec_tokens == {request.request_id: 2}
+
+
+def test_thinking_budget_exhausted_truncates_and_finishes():
+    """Worker-reported budget exhaustion (thinking_budget_action=truncate) drops
+    the surplus tokens and finishes the request with finish_reason=length,
+    unless the drafts before the reported position were rejected or the token
+    there closes the reasoning block naturally."""
+    scheduler = create_scheduler(num_speculative_tokens=2)
+    scheduler.reasoning_end_token_ids = [200]
+    requests = create_requests(num_requests=5, max_tokens=10)
+    for req in requests:
+        req.num_computed_tokens = req.num_tokens
+        scheduler.requests[req.request_id] = req
+        scheduler.running.append(req)
+        req.status = RequestStatus.RUNNING
+    r0, r1, r2, r3, r4 = requests
+
+    scheduler_output = SchedulerOutput(
+        scheduled_new_reqs=[],
+        scheduled_cached_reqs=CachedRequestData.make_empty(),
+        num_scheduled_tokens={
+            r0.request_id: 3,
+            r1.request_id: 3,
+            r2.request_id: 1,
+            r3.request_id: 3,
+            r4.request_id: 1,
+        },
+        total_num_scheduled_tokens=11,
+        scheduled_encoder_inputs={},
+        scheduled_spec_decode_tokens={
+            r0.request_id: [5, 6],
+            r1.request_id: [10, 11],
+            r3.request_id: [20, 21],
+        },
+        num_common_prefix_blocks=[],
+        finished_req_ids=set(),
+        free_encoder_mm_hashes=[],
+    )
+    # r0: nothing kept (drafts all dropped); r1: two kept; r2: no budget;
+    # r3: first draft rejected so position 2 was never produced;
+    # r4: the over-budget token is the natural end marker.
+    model_output = ModelRunnerOutput(
+        req_ids=[req.request_id for req in requests],
+        req_id_to_index={req.request_id: i for i, req in enumerate(requests)},
+        sampled_token_ids=[[5, 6, 8], [10, 11, 12], [7], [30], [200]],
+        logprobs=None,
+        prompt_logprobs_dict={},
+        pooler_output=[],
+        thinking_budget_exhausted={
+            r0.request_id: 0,
+            r1.request_id: 2,
+            r3.request_id: 2,
+            r4.request_id: 0,
+        },
+    )
+    r0_computed_before = r0.num_computed_tokens
+    r1_computed_before = r1.num_computed_tokens
+    scheduler.update_from_output(scheduler_output, model_output)
+
+    assert list(r0.output_token_ids) == []
+    assert list(r1.output_token_ids) == [10, 11]
+    assert list(r2.output_token_ids) == [7]
+    assert list(r3.output_token_ids) == [30]
+    assert list(r4.output_token_ids) == [200]
+    for req in (r0, r1):
+        assert req.status == RequestStatus.FINISHED_LENGTH_CAPPED
+        assert req.stop_reason == "thinking_token_budget"
+        assert req.request_id in scheduler.finished_req_ids
+    assert scheduler.running == [r2, r3, r4]
+    # Dropped draft tokens are rolled back like rejected ones, including when
+    # nothing is kept.
+    assert r1.num_computed_tokens == r1_computed_before - 1
+    assert r0.num_computed_tokens == r0_computed_before - 2
+
+
+@pytest.mark.parametrize(
+    ("committed", "new_tokens", "pos", "end_ids", "expected"),
+    [
+        ([1, 2], [5, 200], 1, [200], True),
+        ([1, 2], [5], 0, [200], False),
+        ([1, 200], [201], 0, [200, 201], True),
+        ([1, 2], [200], 0, [200, 201], True),
+        ([200, 2], [201], 0, [200, 201], False),
+    ],
+)
+def test_reasoning_ends_at(committed, new_tokens, pos, end_ids, expected):
+    assert reasoning_ends_at(committed, new_tokens, pos, end_ids) is expected
